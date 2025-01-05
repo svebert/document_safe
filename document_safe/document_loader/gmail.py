@@ -4,7 +4,7 @@ from typing import List, Optional
 import base64
 import sqlite3
 import logging
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 from googleapiclient.discovery import build
 
@@ -22,14 +22,19 @@ logging.basicConfig(
 class GmailDataLoader:
     def __init__(self, db_path: str = 'mails.db', attachment_folder: str = 'attachments'):
         load_dotenv()
-        project_data_dir = os.path.join(os.getcwd(), 'data')
+        project_dir = os.path.dirname(find_dotenv())
+        project_data_dir = os.path.join(project_dir, os.getenv('DOCUMENT_LOADER_DATA_PATH'))
+        os.makedirs(project_data_dir, exist_ok=True)
         gmail_data_dir = os.path.join(project_data_dir, 'gmail')
+        os.makedirs(gmail_data_dir, exist_ok=True)
         if not os.path.isabs(db_path):
             db_path = os.path.join(gmail_data_dir, 'mails.db')  # Pfad zur SQLite-Datenbank
         self.db_path = db_path
         if not os.path.isabs(attachment_folder):
             attachment_folder = os.path.join(gmail_data_dir, attachment_folder)
+        os.makedirs(attachment_folder, exist_ok=True)
         self.attachment_folder = attachment_folder
+
         self._cred_tmp_folder = os.path.join(self.attachment_folder, 'tmp', 'credentials')
         self.email_addresses: List[str] = os.getenv('DOCUMENT_LOADER_GMAIL_EMAIL_LIST').split(",")
         self.init_db()
