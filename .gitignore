@@ -1,0 +1,7 @@
+.env
+.venv/
+.idea/
+build/
+*.egg-info
+data/
+*.pyc
