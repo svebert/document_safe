@@ -5,6 +5,7 @@ import base64
 import sqlite3
 import logging
 from dotenv import load_dotenv, find_dotenv
+import json
 
 from googleapiclient.discovery import build
 
@@ -49,7 +50,9 @@ class GmailDataLoader:
                 email_subject TEXT,
                 email_date DATETIME,
                 email_body TEXT,
-                email_id TEXT UNIQUE  -- Eindeutige ID der E-Mail
+                email_header TEXT,
+                email_id TEXT UNIQUE,
+                email_sender TEXT
             );
         ''')
         cursor.execute('''
@@ -66,7 +69,7 @@ class GmailDataLoader:
     def load(self, load_all: bool=False):
         latest_date = self.get_latest_email_date()
         if latest_date is None or load_all:
-            start_date = datetime.now() - timedelta(days=1000)  # Z.B. die
+            start_date = datetime.now() - timedelta(days=2100)  # Z.B. die
         else:
             start_date = latest_date  # Startdatum ist das Datum der neuesten )
         end_date: datetime = datetime.now()  # Enddatum (heute)
@@ -98,7 +101,7 @@ class GmailDataLoader:
 
         query = f'has:attachment after:{start_date.strftime("%Y/%m/%d")} before:{end_date.strftime("%Y/%m/%d")} ({file_type_query})'
 
-        results = service.users().messages().list(userId='me', q=query, maxResults=10000).execute()
+        results = service.users().messages().list(userId='me', q=query, maxResults=50000).execute()
         messages: List[dict] = results.get('messages', [])
 
         if not messages:
@@ -110,20 +113,15 @@ class GmailDataLoader:
 
         for message in messages:
             msg = service.users().messages().get(userId='me', id=message['id'], format='full').execute()
-            subject = next((header['value'] for header in msg['payload']['headers'] if header['name'] == 'Subject'),
-                           'No Subject')
-            email_date_str = next((header['value'] for header in msg['payload']['headers'] if header['name'] == 'Date'), 'No Date')
-            cleaned_date_string = email_date_str.split(' (')[0].replace(' GMT', '')
-            try:
-                email_date = datetime.strptime(cleaned_date_string, '%d %b %Y %H:%M:%S %z')
-            except ValueError:
-                try:
-                    try:
-                        email_date = datetime.strptime(cleaned_date_string, '%a, %d %b %Y %H:%M:%S %z')
-                    except ValueError:
-                        email_date = datetime.strptime(cleaned_date_string,  '%d %b %y %H:%M:%S %z')
-                except ValueError:
-                    email_date = datetime.strptime(cleaned_date_string,  '%a, %d %b %Y %H:%M:%S')
+            headers = msg['payload']['headers']
+            # Umwandeln der Header in ein Dictionary
+            header_dict = {header['name']: header['value'] for header in headers}
+            email_subject = header_dict['Subject']
+            email_sender = header_dict['From']
+            # Umwandeln des Dictionaries in einen JSON-String
+            email_header = json.dumps(header_dict, ensure_ascii=False, indent=4)
+
+            email_date = self.get_email_date(msg)
             email_body = ""
             email_id = msg['id']
 
@@ -135,9 +133,16 @@ class GmailDataLoader:
 
             # Speichern der E-Mail-Daten in der Datenbank
             cursor.execute(
-                "INSERT OR IGNORE INTO emails (email_subject, email_date, email_body, email_id) VALUES (?, ?, ?, ?)",
-                (subject, email_date, email_body.strip(), email_id))
-
+                '''
+                INSERT OR IGNORE INTO emails
+                 (email_subject, email_date, email_body, email_header, email_sender, email_id) 
+                 VALUES 
+                 (?, ?, ?, ?, ?, ?)
+                '''
+                ,(email_subject.strip(), email_date, email_body.strip(), email_header.strip(), email_sender,
+                  email_id)
+            )
+            conn.commit()
             cursor.execute("SELECT id FROM emails WHERE email_id=?", (email_id,))
             email_record = cursor.fetchone()
             if not email_record:
@@ -184,9 +189,26 @@ class GmailDataLoader:
 
                         cursor.execute("INSERT OR IGNORE INTO attachments (attachment_filename, email_id) VALUES (?, ?)",
                                        (prefixed_filename, email_record_id))
+                        conn.commit()
 
-        conn.commit()
+
         conn.close()
+
+    def get_email_date(self, msg):
+        email_date_str = next((header['value'] for header in msg['payload']['headers'] if header['name'] == 'Date'),
+                              'No Date')
+        cleaned_date_string = email_date_str.split(' (')[0].replace(' GMT', '')
+        try:
+            email_date = datetime.strptime(cleaned_date_string, '%d %b %Y %H:%M:%S %z')
+        except ValueError:
+            try:
+                try:
+                    email_date = datetime.strptime(cleaned_date_string, '%a, %d %b %Y %H:%M:%S %z')
+                except ValueError:
+                    email_date = datetime.strptime(cleaned_date_string, '%d %b %y %H:%M:%S %z')
+            except ValueError:
+                email_date = datetime.strptime(cleaned_date_string, '%a, %d %b %Y %H:%M:%S')
+        return email_date
 
 
 if __name__ == '__main__':
